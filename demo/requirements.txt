@@ -1,0 +1,11 @@
+streamlit
+torch
+numpy
+matplotlib
+pandas
+seaborn
+imageio
+imageio-ffmpeg
+scipy
+opencv-python
+plotly
