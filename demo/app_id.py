@@ -193,6 +193,13 @@ def compute_directional_coherence(Ix, Iy):
 def compute_temporal_curve(nsg):
     return nsg.abs().mean(dim=(1, 2)).cpu().numpy()
 
+def compute_second_order_score(G):
+    return torch.abs(G[2:] - 2 * G[1:-1] + G[:-2]).mean().item()
+
+def compute_second_order_curve(G):
+    second = torch.abs(G[2:] - 2 * G[1:-1] + G[:-2])
+    return second.mean(dim=(1, 2)).cpu().numpy()
+
 
 # ── Helper UI ───────────────────────────────────────────────────────────────
 
@@ -207,6 +214,7 @@ def _status(metric, value):
         # nilai naik = lebih baik (nilai rendah = mencurigakan)
         "entropy":      [(11.60, "red", "Rendah"),        (11.85, "yellow", "Sedang"),         (1e9, "green", "Normal")],
         "energy":       [(15000, "red", "Rendah"),        (28000, "yellow", "Sedang"),         (1e9, "green", "Kuat")],
+        "second_order": [(5e-6,  "green", "Halus"),        (1e-5,  "yellow", "Meningkat"),      (1e9, "red", "Tinggi")],
     }
     for t, color, label in thresholds[metric]:
         if value <= t:
@@ -393,6 +401,9 @@ else:
         gradient_energy       = compute_gradient_energy(Ix, Iy, It)
         directional_coherence = compute_directional_coherence(Ix, Iy)
         dG_dt                 = torch.abs(G[1:] - G[:-1])
+        second_order          = compute_second_order_score(G)
+        second_order_curve_data = compute_second_order_curve(G)
+        second_order_map      = torch.abs(G[2:] - 2 * G[1:-1] + G[:-2])
 
     hr()
 
@@ -407,7 +418,7 @@ else:
     st.markdown("<div class='step-label'>Langkah 2 dari 4 — Skor Ukuran Fisika</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-heading'>Tujuh Ukuran Kewajaran Gerak</div>", unsafe_allow_html=True)
     st.markdown(
-        "<div class='section-sub'>Tujuh pengukuran seberapa baik video ini mematuhi hukum fisika gerak alami. "
+        "<div class='section-sub'>Delapan pengukuran seberapa baik video ini mematuhi hukum fisika gerak alami. "
         "Masing-masing diukur secara terpisah — bersama-sama menjadi dasar penilaian di atas.</div>",
         unsafe_allow_html=True
     )
@@ -438,7 +449,7 @@ else:
             f"{divergence:.4f}", "divergence", divergence
         )
 
-    c5, c6, c7 = st.columns(3)
+    c5, c6, c7, c8 = st.columns(4)
     with c5:
         render_metric_card(
             "Stabilitas Energi Gerak",
@@ -456,6 +467,12 @@ else:
             "Energi Gradien Total",
             "Total energi gerak yang tertangkap dari gradien spasial dan temporal. Rekaman nyata biasanya memiliki energi gerak mentah lebih besar dibanding video sintetis.",
             f"{gradient_energy:,.0f}", "energy", gradient_energy
+        )
+    with c8:
+        render_metric_card(
+            "Kontinuitas Orde Dua",
+            "Akselerasi perubahan medan probabilitas antar frame. Mengukur laju perubahan transisi temporal — nilai tinggi menandakan pola tidak wajar yang umum pada video buatan AI.",
+            f"{second_order:.2e}", "second_order", second_order
         )
 
     hr()
@@ -494,11 +511,36 @@ else:
         unsafe_allow_html=True
     )
 
+    curve2 = second_order_curve_data
+    x2 = np.arange(len(curve2))
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(
+        x=x2, y=curve2,
+        mode="lines",
+        line=dict(width=2.5, color="#a78bfa"),
+        fill='tozeroy',
+        fillcolor="rgba(167,139,250,0.07)",
+        hovertemplate='Frame %{x}: skor = %{y:.4e}<extra></extra>'
+    ))
+    fig2.update_layout(
+        xaxis_title="Frame",
+        yaxis_title="Skor Orde Dua",
+        height=220,
+        **plotly_base()
+    )
+    st.plotly_chart(fig2, use_container_width=True)
+    st.markdown(
+        "<div class='chart-caption'>Kontinuitas temporal orde dua — mengukur akselerasi perubahan medan probabilitas. "
+        "Nilai tinggi menandakan diskontinuitas temporal yang tidak wajar secara fisika.</div>",
+        unsafe_allow_html=True
+    )
+
     hr()
 
     # ── Langkah 4: Peta Spasial ──────────────────────────────────────────────
     safe_nsg  = min(frame_idx, nsg.shape[0] - 1)
     safe_cont = min(frame_idx, dG_dt.shape[0] - 1)
+    safe_so   = min(frame_idx, second_order_map.shape[0] - 1)
 
     st.markdown("<div class='step-label'>Langkah 4 dari 4 — Peta Visual Kejanggalan</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-heading'>Di Mana Gerak Tidak Wajar Terjadi</div>", unsafe_allow_html=True)
@@ -509,7 +551,7 @@ else:
         unsafe_allow_html=True
     )
 
-    col_m1, col_m2 = st.columns(2)
+    col_m1, col_m2, col_m3 = st.columns(3)
 
     with col_m1:
         st.markdown("<div class='map-label'>Medan Pola Gerak Fisika (NSG)</div>", unsafe_allow_html=True)
@@ -555,6 +597,28 @@ else:
         fig_cont.update_yaxes(showticklabels=False, showgrid=False, zeroline=False)
         st.plotly_chart(fig_cont, use_container_width=True)
 
+    with col_m3:
+        st.markdown("<div class='map-label'>Peta Kontinuitas Orde Dua</div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div class='map-sub'>Bercak terang = piksel dengan akselerasi temporal yang tidak wajar</div>",
+            unsafe_allow_html=True
+        )
+        fig_so = px.imshow(
+            second_order_map[safe_so].cpu().numpy(),
+            color_continuous_scale='viridis',
+            origin='lower',
+            labels=dict(color='∂²G/∂t²'),
+        )
+        fig_so.update_layout(
+            height=400,
+            paper_bgcolor='#0f1117',
+            margin=dict(l=0, r=0, t=0, b=0),
+            coloraxis_showscale=False,
+        )
+        fig_so.update_xaxes(showticklabels=False, showgrid=False, zeroline=False)
+        fig_so.update_yaxes(showticklabels=False, showgrid=False, zeroline=False)
+        st.plotly_chart(fig_so, use_container_width=True)
+
     hr()
 
     # ── Detail Teknis ────────────────────────────────────────────────────────
@@ -573,11 +637,12 @@ terlihat meyakinkan secara visual.
 2. Hitung gradien spasial per piksel (Ix, Iy) dan gradien temporal (It) menggunakan beda hingga
 3. Bangun medan probabilitas ternormalisasi G dari magnitudo gradien
 4. Hitung NSG = ∂(log G)/∂x / (−∂(log G)/∂t + λ), dibatasi pada rentang [−10, 10]
-5. Agregasi tujuh metrik skalar dari seluruh video
+5. Agregasi delapan metrik skalar dari seluruh video
 
 **Metrik diskriminan utama (dari analisis statistik tesis)**
 - **Konsistensi Arah Gerak**: Sinyal terkuat (Cohen's d ≈ 1,05). Mengukur kemiripan cosine antara arah gradien frame berurutan. Video sintetis memiliki arah yang terlalu seragam (rata-rata ≈ 0,37) vs video asli (rata-rata ≈ 0,15).
 - **Entropi Spasial**: Kedua terkuat (Cohen's d ≈ 0,84). Video asli memiliki tekstur lebih kaya dan beragam (rata-rata ≈ 11,99) vs sintetis (rata-rata ≈ 11,75).
+- **Kontinuitas Orde Dua**: Sinyal pendukung. Mengukur turunan temporal orde dua dari G — 'akselerasi' perubahan medan probabilitas. Video sintetis menunjukkan nilai sedikit lebih tinggi karena diskontinuitas temporal yang tidak wajar secara fisika.
 
 **Logika deteksi**
 - Konsistensi Arah Gerak > 0,50 → sinyal kuat video palsu (+3)

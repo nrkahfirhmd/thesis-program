@@ -193,6 +193,13 @@ def compute_directional_coherence(Ix, Iy):
 def compute_temporal_curve(nsg):
     return nsg.abs().mean(dim=(1, 2)).cpu().numpy()
 
+def compute_second_order_score(G):
+    return torch.abs(G[2:] - 2 * G[1:-1] + G[:-2]).mean().item()
+
+def compute_second_order_curve(G):
+    second = torch.abs(G[2:] - 2 * G[1:-1] + G[:-2])
+    return second.mean(dim=(1, 2)).cpu().numpy()
+
 
 # ── UI helpers ───────────────────────────────────────────────────────────────
 
@@ -207,6 +214,7 @@ def _status(metric, value):
         # ascending threshold = better (lower value = suspicious)
         "entropy":      [(11.60, "red", "Low"),        (11.85, "yellow", "Moderate"), (1e9, "green", "Normal")],
         "energy":       [(15000, "red", "Low"),        (28000, "yellow", "Moderate"), (1e9, "green", "Strong")],
+        "second_order": [(5e-6,  "green", "Smooth"),   (1e-5,  "yellow", "Elevated"), (1e9, "red", "High")],
     }
     for t, color, label in thresholds[metric]:
         if value <= t:
@@ -393,6 +401,9 @@ else:
         gradient_energy      = compute_gradient_energy(Ix, Iy, It)
         directional_coherence = compute_directional_coherence(Ix, Iy)
         dG_dt                = torch.abs(G[1:] - G[:-1])
+        second_order         = compute_second_order_score(G)
+        second_order_curve_data = compute_second_order_curve(G)
+        second_order_map     = torch.abs(G[2:] - 2 * G[1:-1] + G[:-2])
 
     hr()
 
@@ -407,7 +418,7 @@ else:
     st.markdown("<div class='step-label'>Step 2 of 4 — Physics Integrity Scores</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-heading'>Kinematic Health Indicators</div>", unsafe_allow_html=True)
     st.markdown(
-        "<div class='section-sub'>Seven measurements of how well this video obeys natural motion physics. "
+        "<div class='section-sub'>Eight measurements of how well this video obeys natural motion physics. "
         "Each is scored independently — together they form the basis of the verdict above.</div>",
         unsafe_allow_html=True
     )
@@ -438,7 +449,7 @@ else:
             f"{divergence:.4f}", "divergence", divergence
         )
 
-    c5, c6, c7 = st.columns(3)
+    c5, c6, c7, c8 = st.columns(4)
     with c5:
         render_metric_card(
             "Conservation Error",
@@ -456,6 +467,12 @@ else:
             "Gradient Energy",
             "Total motion energy captured from spatial and temporal gradients. Real footage typically carries more raw movement energy than synthetic generation.",
             f"{gradient_energy:,.0f}", "energy", gradient_energy
+        )
+    with c8:
+        render_metric_card(
+            "Second-Order Continuity",
+            "Acceleration of probability field changes across frames. Measures the rate of change of temporal transitions — higher values indicate non-physical jitter common in AI-generated video.",
+            f"{second_order:.2e}", "second_order", second_order
         )
 
     hr()
@@ -494,11 +511,36 @@ else:
         unsafe_allow_html=True
     )
 
+    curve2 = second_order_curve_data
+    x2 = np.arange(len(curve2))
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(
+        x=x2, y=curve2,
+        mode="lines",
+        line=dict(width=2.5, color="#a78bfa"),
+        fill='tozeroy',
+        fillcolor="rgba(167,139,250,0.07)",
+        hovertemplate='Frame %{x}: score = %{y:.4e}<extra></extra>'
+    ))
+    fig2.update_layout(
+        xaxis_title="Frame",
+        yaxis_title="Second-Order Score",
+        height=220,
+        **plotly_base()
+    )
+    st.plotly_chart(fig2, use_container_width=True)
+    st.markdown(
+        "<div class='chart-caption'>Second-order temporal continuity — measures acceleration of probability field changes. "
+        "Elevated values indicate non-physical temporal discontinuities.</div>",
+        unsafe_allow_html=True
+    )
+
     hr()
 
     # ── Step 4: Spatial maps ─────────────────────────────────────────────────
     safe_nsg  = min(frame_idx, nsg.shape[0] - 1)
     safe_cont = min(frame_idx, dG_dt.shape[0] - 1)
+    safe_so   = min(frame_idx, second_order_map.shape[0] - 1)
 
     st.markdown("<div class='step-label'>Step 4 of 4 — Spatial Physics Map</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-heading'>Where Physics Breaks Down</div>", unsafe_allow_html=True)
@@ -509,7 +551,7 @@ else:
         unsafe_allow_html=True
     )
 
-    col_m1, col_m2 = st.columns(2)
+    col_m1, col_m2, col_m3 = st.columns(3)
 
     with col_m1:
         st.markdown("<div class='map-label'>Motion Physics Field (NSG)</div>", unsafe_allow_html=True)
@@ -555,6 +597,28 @@ else:
         fig_cont.update_yaxes(showticklabels=False, showgrid=False, zeroline=False)
         st.plotly_chart(fig_cont, use_container_width=True)
 
+    with col_m3:
+        st.markdown("<div class='map-label'>Second-Order Continuity Map</div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div class='map-sub'>Bright patches = pixels with non-physical temporal acceleration</div>",
+            unsafe_allow_html=True
+        )
+        fig_so = px.imshow(
+            second_order_map[safe_so].cpu().numpy(),
+            color_continuous_scale='viridis',
+            origin='lower',
+            labels=dict(color='∂²G/∂t²'),
+        )
+        fig_so.update_layout(
+            height=400,
+            paper_bgcolor='#0f1117',
+            margin=dict(l=0, r=0, t=0, b=0),
+            coloraxis_showscale=False,
+        )
+        fig_so.update_xaxes(showticklabels=False, showgrid=False, zeroline=False)
+        fig_so.update_yaxes(showticklabels=False, showgrid=False, zeroline=False)
+        st.plotly_chart(fig_so, use_container_width=True)
+
     hr()
 
     # ── Technical details ────────────────────────────────────────────────────
@@ -572,11 +636,12 @@ this field — detectable even when the video looks convincing to the human eye.
 2. Extract per-pixel spatial gradients (Ix, Iy) and temporal gradient (It) via finite differences
 3. Build a normalized probability field G from gradient magnitudes
 4. Compute NSG = ∂(log G)/∂x / (−∂(log G)/∂t + λ), clamped to [−10, 10]
-5. Aggregate seven scalar metrics across the video
+5. Aggregate eight scalar metrics across the video
 
 **Key discriminating metrics (from thesis statistical analysis)**
 - **Directional Coherence**: Strongest signal (Cohen's d ≈ 1.05). Measures cosine similarity between consecutive-frame gradient directions. Synthetic videos have unnaturally uniform motion directions (mean ≈ 0.37) vs real videos (mean ≈ 0.15).
 - **Spatial Entropy**: Second strongest (Cohen's d ≈ 0.84). Real videos have richer, more diverse pixel texture (mean ≈ 11.99) vs synthetic (mean ≈ 11.75).
+- **Second-Order Continuity**: Supporting signal. Measures the second-order temporal derivative of G — the 'acceleration' of probability field changes. Synthetic videos show slightly higher values due to non-physical temporal discontinuities.
 
 **Detection logic**
 - Directional Coherence > 0.50 → strong synthetic signal (+3)
